@@ -26,7 +26,7 @@ async def chat(request: Request, body: ChatRequest, user: dict = Depends(current
         }
         yield f"data: {json.dumps(session_event, ensure_ascii=False)}\n\n"
 
-        # 再发送聊天流式事件（多智能体编排）
+        # 再发送聊天流式事件（多智能体编排 / 单智能体直接问答）
         async for event in generate_response(
             orchestrator_service=request.app.state.orchestrator_service,
             messages=body.messages,
@@ -34,6 +34,7 @@ async def chat(request: Request, body: ChatRequest, user: dict = Depends(current
             user_id=user_id,
             session_service=session_service,
             langfuse_service=request.app.state.langfuse_service,
+            agent_id=body.agent_id,
         ):
             yield event
 

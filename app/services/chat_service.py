@@ -105,6 +105,7 @@ async def generate_response(
     user_id: str = None,
     session_service=None,
     langfuse_service: LangfuseService = None,
+    agent_id: Optional[str] = None,
 ) -> AsyncGenerator[str, None]:
     """根据消息列表生成流式回复（多智能体编排版本）。
 
@@ -149,12 +150,13 @@ async def generate_response(
     # 收集最终输出（用于持久化和 langfuse）
     final_output_parts: List[str] = []
 
-    # 执行编排主流程
+    # 执行编排主流程（携带 agent_id，若不为空则走单 agent 直接问答）
     async for event_str in orchestrator_service.run(
         full_messages,
         session_id=session_id,
         user_id=user_id,
         session_service=session_service,
+        agent_id=agent_id,
     ):
         yield event_str
 
