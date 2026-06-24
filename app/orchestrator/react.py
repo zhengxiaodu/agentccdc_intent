@@ -13,7 +13,9 @@
 import asyncio
 import json
 import logging
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, Dict, Optional
+
+from agentscope.state import AgentState
 
 from openai import AsyncOpenAI
 
@@ -67,6 +69,7 @@ class ReActOrchestrator(BaseOrchestrator):
         self,
         intent_result: IntentResult,
         session_id: Optional[str] = None,
+        agent_states: Optional[Dict[str, AgentState]] = None,
     ) -> AsyncGenerator[str, None]:
         """执行 ReAct 循环。"""
         yield self._event({
@@ -79,6 +82,7 @@ class ReActOrchestrator(BaseOrchestrator):
         scratch = ""
         task_desc = self._build_task_description(intent_result)
         available_actions = self._build_available_actions(intent_result)
+        self._last_results = []
 
         for step in range(1, self._max_steps + 1):
             yield self._event({
@@ -128,7 +132,7 @@ class ReActOrchestrator(BaseOrchestrator):
 
             # 执行智能体
             observation = await self._execute_action(
-                action_name, action_args, intent_result, session_id
+                action_name, action_args, intent_result, session_id, agent_states
             )
 
             # Observe：追加到 scratch
@@ -207,6 +211,7 @@ class ReActOrchestrator(BaseOrchestrator):
         action_args: dict,
         intent_result: IntentResult,
         session_id: Optional[str] = None,
+        agent_states: Optional[Dict[str, AgentState]] = None,
     ) -> str:
         """执行 ReAct 中选定的一步动作。"""
         if action_name == "final":
@@ -223,7 +228,14 @@ class ReActOrchestrator(BaseOrchestrator):
                 agent=agent_id,
             )
 
-            result = await self._run_single_agent(intent, session_id=session_id)
+            agent_state = (agent_states or {}).get(agent_id)
+            result = await self._run_single_agent(
+                intent,
+                session_id=session_id,
+                agent_state=agent_state,
+            )
+            if result.final_state:
+                self._last_results.append(result)
             return result.output if result.success else f"执行失败: {result.output}"
 
         return f"未知动作: {action_name}"

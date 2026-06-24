@@ -10,6 +10,8 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 import yaml
 from openai import AsyncOpenAI
 
+from agentscope.state import AgentState
+
 from app.config import AGENT_CONFIG_PATH, INTENT_CONFIG_PATH, SKILL_CONFIG_PATH
 from app.agents.factory import AgentFactory
 from app.agents.registry import AgentRegistry, load_agent_definitions, load_all_skills
@@ -55,6 +57,7 @@ class OrchestratorService:
         self._parallel: Optional[ParallelOrchestrator] = None
         self._pipeline: Optional[PipelineOrchestrator] = None
         self._react: Optional[ReActOrchestrator] = None
+        self._last_orchestrator: Optional[Any] = None
 
     @classmethod
     async def create(cls, model_config: dict) -> "OrchestratorService":
@@ -172,6 +175,21 @@ class OrchestratorService:
         else:
             return self._get_parallel()
 
+    @property
+    def last_agent_states(self) -> Dict[str, dict]:
+        """获取最近一次编排中所有 agent 的最终状态 dict。
+
+        Returns:
+            {agent_id: state_dict, ...}
+        """
+        if not self._last_orchestrator:
+            return {}
+        states = {}
+        for r in self._last_orchestrator._last_results:
+            if r.final_state:
+                states[r.agent_id] = r.final_state
+        return states
+
     @staticmethod
     def _event(data: dict) -> str:
         """序列化 SSE 事件。"""
@@ -214,12 +232,16 @@ class OrchestratorService:
         self,
         messages: List[Dict[str, Any]],
         session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_service: Optional[Any] = None,
     ) -> AsyncGenerator[str, None]:
         """编排主流程：改写 → 识别 → 选择编排器 → 执行。
 
         Args:
             messages: 前端传入的消息列表（含历史 + 当前用户输入）
             session_id: 会话 id
+            user_id: 用户 id（用于加载/保存 AgentState）
+            session_service: 会话服务（用于加载/保存 AgentState）
 
         Yields:
             SSE 事件字符串（"data: {...}\n\n" 格式）
@@ -267,6 +289,38 @@ class OrchestratorService:
         # ③ 选择编排器
         orchestrator = self._select_orchestrator(intent_result)
 
-        # ④ 执行编排（内部 yield SSE 事件）
-        async for event_str in orchestrator.run(intent_result, session_id=session_id):
+        # ④ 加载已有 AgentState（按 agent_id 逐个加载）
+        agent_states: Dict[str, AgentState] = {}
+        if session_service and session_id and user_id:
+            for intent in intent_result.intents:
+                agent_id = intent.agent or "general_agent"
+                try:
+                    state_dict = await session_service.load_agent_state(session_id, agent_id)
+                    if state_dict:
+                        agent_states[agent_id] = AgentState.model_validate(state_dict)
+                except Exception:
+                    logger.debug(f"[OrchestratorService] 无法加载 {agent_id} 状态，将新建")
+
+        # ⑤ 执行编排（内部 yield SSE 事件）
+        async for event_str in orchestrator.run(
+            intent_result,
+            session_id=session_id,
+            agent_states=agent_states,
+        ):
             yield event_str
+
+        # ⑥ 保存编排结果引用（供外部提取 agent states）
+        self._last_orchestrator = orchestrator
+
+        # ⑦ 持久化所有 AgentState
+        if session_service and session_id and user_id:
+            for r in orchestrator._last_results:
+                if r.final_state:
+                    try:
+                        await session_service.save_agent_state(
+                            session_id, user_id, r.agent_id, r.final_state,
+                        )
+                    except Exception:
+                        logger.exception(
+                            f"[OrchestratorService] 保存 agent {r.agent_id} 状态失败"
+                        )

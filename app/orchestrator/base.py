@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from agentscope.event import AgentEvent, ReplyStartEvent
 from agentscope.message import AssistantMsg, UserMsg
+from agentscope.state import AgentState
 
 from app.agents.factory import AgentFactory
 from app.intent.models import Intent, IntentResult
@@ -24,12 +25,14 @@ class TaskResult(BaseModel):
         success: 是否成功
         output: 该智能体的文本输出（合并所有文本块）
         events: 该智能体产生的 SSE 事件字符串列表（用于回放）
+        final_state: 执行结束后的 AgentState dict（用于持久化）
     """
     intent_id: str
     agent_id: str
     success: bool = True
     output: str = ""
     events: List[str] = Field(default_factory=list)
+    final_state: Optional[dict] = None
 
 
 class BaseOrchestrator(ABC):
@@ -42,12 +45,14 @@ class BaseOrchestrator(ABC):
 
     def __init__(self, agent_factory: AgentFactory):
         self.agent_factory = agent_factory
+        self._last_results: List[TaskResult] = []
 
     async def _run_single_agent(
         self,
         intent: Intent,
         prior_context: str = "",
         session_id: Optional[str] = None,
+        agent_state: Optional[AgentState] = None,
     ) -> TaskResult:
         """执行单个智能体，收集所有 SSE 事件。
 
@@ -55,11 +60,13 @@ class BaseOrchestrator(ABC):
             intent: 要执行的意图
             prior_context: 前置步骤的输出（流水线模式中使用）
             session_id: 会话 id
+            agent_state: 已恢复的 AgentState（多轮上下文），为 None 则新建
         """
         agent_id = intent.agent or "general_agent"
         agent = self.agent_factory.create_for_agent(
             agent_id=agent_id,
             session_id=session_id,
+            agent_state=agent_state,
         )
         if agent is None:
             return TaskResult(
@@ -98,6 +105,9 @@ class BaseOrchestrator(ABC):
                         text_parts.append(getattr(block, "text", str(block)))
                 result.output = "\n".join(text_parts).strip()
 
+            # 捕获执行后的 AgentState（用于后续持久化）
+            result.final_state = agent.state.model_dump()
+
             result.success = True
         except Exception as e:
             logger.exception(f"[Orchestrator] 智能体 {agent_id} 执行异常")
@@ -111,6 +121,7 @@ class BaseOrchestrator(ABC):
         self,
         intent_result: IntentResult,
         session_id: Optional[str] = None,
+        agent_states: Optional[Dict[str, AgentState]] = None,
     ) -> AsyncGenerator[str, None]:
         """执行编排，yield SSE 事件字符串。"""
         ...

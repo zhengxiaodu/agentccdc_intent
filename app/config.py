@@ -13,9 +13,20 @@ JWT_ALGORITHM = "HS256"
 JWT_SECRET = os.getenv("JWT_SECRET", "please-change-this-secret")
 JWT_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "8"))
 
-# Redis 配置
+# Redis 配置（保留，用于其他需求）
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 REDIS_SESSION_TTL = int(os.getenv("REDIS_SESSION_TTL", "86400"))
+
+# PostgreSQL 配置（会话持久化）
+PG_HOST = os.getenv("PG_HOST", "localhost")
+PG_PORT = int(os.getenv("PG_PORT", "5432"))
+PG_USER = os.getenv("PG_USER", "postgres")
+PG_PASSWORD = os.getenv("PG_PASSWORD", "zxdzxd.123")
+PG_DATABASE = os.getenv("PG_DATABASE", "agentscope")
+PG_DSN = os.getenv(
+    "PG_DSN",
+    f"postgresql://{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{PG_DATABASE}",
+)
 
 # 文件上传配置
 UPLOAD_MAX_SIZE_MB = int(os.getenv("UPLOAD_MAX_SIZE_MB", "10"))

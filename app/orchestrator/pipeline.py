@@ -7,7 +7,9 @@
 """
 import asyncio
 import logging
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, Dict, List, Optional
+
+from agentscope.state import AgentState
 
 from app.agents.factory import AgentFactory
 from app.intent.models import IntentResult
@@ -37,9 +39,11 @@ class PipelineOrchestrator(BaseOrchestrator):
         self,
         intent_result: IntentResult,
         session_id: Optional[str] = None,
+        agent_states: Optional[Dict[str, AgentState]] = None,
     ) -> AsyncGenerator[str, None]:
         """按固定顺序串行执行意图。"""
         intents = intent_result.intents
+        agent_states = agent_states or {}
 
         yield self._event({
             "type": "orchestration_start",
@@ -49,6 +53,7 @@ class PipelineOrchestrator(BaseOrchestrator):
 
         # 串行执行流水线
         prior_context = ""
+        self._last_results = []
         for i, intent in enumerate(intents):
             # 发送任务启动事件
             yield self._event({
@@ -59,6 +64,10 @@ class PipelineOrchestrator(BaseOrchestrator):
                 "total_steps": len(intents),
             })
 
+            # 加载该 agent 的已有状态
+            agent_id = intent.agent or "general_agent"
+            agent_state = agent_states.get(agent_id)
+
             # 执行当前步骤
             try:
                 result = await asyncio.wait_for(
@@ -66,11 +75,14 @@ class PipelineOrchestrator(BaseOrchestrator):
                         intent,
                         prior_context=prior_context,
                         session_id=session_id,
+                        agent_state=agent_state,
                     ),
                     timeout=self._step_timeout,
                 )
             except asyncio.TimeoutError:
                 result = self._make_timeout_result(intent)
+
+            self._last_results.append(result)
 
             # 回放 SSE 事件
             for event_str in result.events:

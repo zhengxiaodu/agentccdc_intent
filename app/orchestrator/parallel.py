@@ -9,7 +9,9 @@
 import asyncio
 import json
 import logging
-from typing import AsyncGenerator, List, Optional
+from typing import AsyncGenerator, Dict, List, Optional
+
+from agentscope.state import AgentState
 
 from app.agents.factory import AgentFactory
 from app.intent.models import IntentResult
@@ -40,9 +42,11 @@ class ParallelOrchestrator(BaseOrchestrator):
         self,
         intent_result: IntentResult,
         session_id: Optional[str] = None,
+        agent_states: Optional[Dict[str, AgentState]] = None,
     ) -> AsyncGenerator[str, None]:
         """并行执行所有意图。"""
         intents = intent_result.intents
+        agent_states = agent_states or {}
 
         # 发送编排开始事件
         yield self._event({
@@ -53,7 +57,7 @@ class ParallelOrchestrator(BaseOrchestrator):
 
         # ① 并行执行所有意图
         tasks = [
-            self._run_with_timeout(intent, session_id)
+            self._run_with_timeout(intent, session_id, agent_states)
             for intent in intents
         ]
 
@@ -66,6 +70,11 @@ class ParallelOrchestrator(BaseOrchestrator):
             })
 
         results: List[TaskResult] = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # 存储结果供后续保存状态用
+        self._last_results = [
+            r for r in results if isinstance(r, TaskResult)
+        ]
 
         # ② 回放事件 + 汇总结果
         summary_parts = []
@@ -112,9 +121,12 @@ class ParallelOrchestrator(BaseOrchestrator):
         self,
         intent,
         session_id: Optional[str] = None,
+        agent_states: Optional[Dict[str, AgentState]] = None,
     ) -> TaskResult:
         """带超时的智能体执行。"""
+        agent_id = intent.agent or "general_agent"
+        agent_state = (agent_states or {}).get(agent_id)
         return await asyncio.wait_for(
-            self._run_single_agent(intent, session_id=session_id),
+            self._run_single_agent(intent, session_id=session_id, agent_state=agent_state),
             timeout=self._timeout,
         )
