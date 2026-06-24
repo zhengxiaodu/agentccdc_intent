@@ -24,6 +24,9 @@ from app.orchestrator.pipeline import PipelineOrchestrator
 from app.orchestrator.react import ReActOrchestrator
 from app.services.chat_service import create_model_from_config
 
+from agentscope.event import AgentEvent, ReplyStartEvent
+from agentscope.message import AssistantMsg, UserMsg
+
 logger = logging.getLogger(__name__)
 
 
@@ -234,14 +237,18 @@ class OrchestratorService:
         session_id: Optional[str] = None,
         user_id: Optional[str] = None,
         session_service: Optional[Any] = None,
+        agent_id: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """编排主流程：改写 → 识别 → 选择编排器 → 执行。
+
+        若传入 agent_id，则跳过改写/识别/编排，直接执行指定智能体。
 
         Args:
             messages: 前端传入的消息列表（含历史 + 当前用户输入）
             session_id: 会话 id
             user_id: 用户 id（用于加载/保存 AgentState）
             session_service: 会话服务（用于加载/保存 AgentState）
+            agent_id: 可选，指定后走单智能体直接问答
 
         Yields:
             SSE 事件字符串（"data: {...}\n\n" 格式）
@@ -252,6 +259,96 @@ class OrchestratorService:
         if not user_input:
             yield self._event({"type": "error", "message": "未检测到有效用户输入"})
             return
+
+        # ========== 单智能体直接问答路径（跳过改写→识别→编排） ==========
+        if agent_id:
+            yield self._event({
+                "type": "orchestration_start",
+                "mode": "direct",
+                "agent_id": agent_id,
+            })
+
+            # 校验 agent_id 是否存在
+            definition = self.registry.get_definition(agent_id)
+            if not definition:
+                yield self._event({
+                    "type": "error",
+                    "message": f"agent_id '{agent_id}' 不存在",
+                })
+                return
+
+            from app.intent.models import Intent
+            intent = Intent(id=f"direct_{agent_id}", query=user_input, agent=agent_id)
+
+            # 加载已有 AgentState
+            agent_state = None
+            if session_service and session_id and user_id:
+                try:
+                    state_dict = await session_service.load_agent_state(session_id, agent_id)
+                    if state_dict:
+                        agent_state = AgentState.model_validate(state_dict)
+                except Exception:
+                    logger.debug(f"[OrchestratorService] 无法加载 {agent_id} 状态，将新建")
+
+            # 创建 agent 实例
+            agent = self.agent_factory.create_for_agent(
+                agent_id=agent_id,
+                session_id=session_id,
+                agent_state=agent_state,
+            )
+            if agent is None:
+                yield self._event({
+                    "type": "error",
+                    "message": f"无法创建智能体 '{agent_id}'",
+                })
+                return
+
+            # 执行单 agent 对话
+            user_msg = UserMsg(name="user", content=user_input)
+            apply = None
+            final_output_parts = []
+
+            try:
+                async for event in agent.reply_stream(user_msg):
+                    if isinstance(event, ReplyStartEvent):
+                        apply = AssistantMsg(name=event.name, content=[], id=event.reply_id)
+
+                    if isinstance(event, AgentEvent):
+                        if apply:
+                            apply.append_event(event)
+                        yield f"data: {event.model_dump_json()}\n\n"
+
+                if apply:
+                    text_parts = []
+                    for block in apply.content:
+                        if hasattr(block, "type") and block.type == "text":
+                            text_parts.append(getattr(block, "text", str(block)))
+                    final_output = "\n".join(text_parts).strip()
+                    final_output_parts.append(final_output)
+
+                # 保存 AgentState
+                final_state = agent.state.model_dump()
+                if session_service and session_id and user_id and final_state:
+                    await session_service.save_agent_state(
+                        session_id, user_id, agent_id, final_state,
+                    )
+
+            except Exception as e:
+                logger.exception(f"[OrchestratorService] 单智能体 {agent_id} 执行异常")
+                yield self._event({
+                    "type": "error",
+                    "message": f"执行出错: {str(e)}",
+                })
+                return
+
+            # yield summary 事件
+            if final_output_parts:
+                yield self._event({
+                    "type": "summary",
+                    "content": final_output_parts[0],
+                })
+
+            return  # 跳过后续改写→识别→编排流程
 
         # ① 查询改写（联系上下文）
         try:
