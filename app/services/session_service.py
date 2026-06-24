@@ -3,14 +3,13 @@ from typing import Optional
 
 from agentscope.state import AgentState
 
-from app.dao.session_dao import SessionDAO
 from app.models.session import SessionMeta, SessionMessage, SessionDetailResponse
 
 
 class SessionService:
     """会话生命周期管理"""
 
-    def __init__(self, dao: SessionDAO):
+    def __init__(self, dao):
         self.dao = dao
 
     async def get_or_create_session(self, session_id: Optional[str], user_id: str) -> str:
@@ -19,13 +18,13 @@ class SessionService:
             return session_id
         return uuid.uuid4().hex
 
-    async def load_agent_state(self, session_id: str) -> Optional[dict]:
-        """从 Redis 加载 AgentState 原始数据。"""
-        return await self.dao.load_agent_state(session_id)
+    async def load_agent_state(self, session_id: str, agent_id: str = "general_agent") -> Optional[dict]:
+        """从 PostgreSQL 加载 AgentState 原始数据。"""
+        return await self.dao.load_agent_state(session_id, agent_id)
 
-    async def save_agent_state(self, session_id: str, user_id: str, state_dict: dict) -> None:
-        """将 AgentState dict 持久化到 Redis。"""
-        await self.dao.save_agent_state(session_id, user_id, state_dict)
+    async def save_agent_state(self, session_id: str, user_id: str, agent_id: str, state_dict: dict) -> None:
+        """将 AgentState dict 持久化到 PostgreSQL。"""
+        await self.dao.save_agent_state(session_id, user_id, agent_id, state_dict)
 
     async def save_latest_trace_id(self, session_id: str, trace_id: str) -> None:
         """将最新 trace_id 保存到会话元信息。"""
@@ -64,11 +63,10 @@ class SessionService:
     async def get_session_detail(
         self, session_id: str, user_id: str
     ) -> Optional[SessionDetailResponse]:
-        """获取会话详情（含对话历史）。"""
-        state = await self.dao.load_agent_state(session_id)
-        if state is None:
-            return None
+        """获取会话详情（含对话历史）。
 
+        消息从 messages 表加载，不再从 AgentState 中提取。
+        """
         meta = await self.dao.get_session_meta(session_id)
         if meta is None:
             return None
@@ -76,7 +74,8 @@ class SessionService:
         if meta.get("user_id") != user_id:
             raise PermissionError("会话不属于当前用户")
 
-        raw_messages = self.dao.extract_messages_from_state(state)
+        # 从 messages 表加载消息
+        raw_messages = await self.dao.load_messages(session_id)
         messages = [SessionMessage(**m) for m in raw_messages]
 
         return SessionDetailResponse(

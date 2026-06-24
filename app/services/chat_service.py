@@ -150,7 +150,12 @@ async def generate_response(
     final_output_parts: List[str] = []
 
     # 执行编排主流程
-    async for event_str in orchestrator_service.run(full_messages, session_id=session_id):
+    async for event_str in orchestrator_service.run(
+        full_messages,
+        session_id=session_id,
+        user_id=user_id,
+        session_service=session_service,
+    ):
         yield event_str
 
         # 解析事件，提取 summary 作为最终输出，并检测 CUSTOM_COMPONENT

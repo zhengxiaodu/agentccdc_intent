@@ -42,9 +42,11 @@
 
 ## 二、目标设计
 
-### 数据库表结构
+### 数据库表结构（三表设计）
 
-#### `sessions` 表（替代 Redis 的 state + meta + 用户索引 + 置顶索引）
+> **关键设计**：一次对话可能涉及多个 agent（并行/流水线/ReAct 编排），每个 agent 有独立的 `AgentState`。因此 `agent_states` 独立成表，(session_id, agent_id) 联合主键。
+
+#### `sessions` 表（会话级元信息，替代 Redis 的 meta + 用户索引 + 置顶索引）
 
 ```sql
 CREATE TABLE IF NOT EXISTS sessions (
@@ -55,18 +57,33 @@ CREATE TABLE IF NOT EXISTS sessions (
     updated_at   TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     message_count INTEGER NOT NULL DEFAULT 0,
     latest_trace_id TEXT,
-    agent_id     TEXT,
-    state        JSONB,              -- AgentState 完整序列化
     is_pinned    BOOLEAN NOT NULL DEFAULT FALSE,
     pinned_at    TIMESTAMP WITH TIME ZONE
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_sessions_user_pinned ON sessions(user_id, pinned_at DESC) WHERE is_pinned = TRUE;
+CREATE INDEX IF NOT EXISTS idx_sessions_user_pinned
+    ON sessions(user_id, pinned_at DESC) WHERE is_pinned = TRUE;
 ```
 
-> `agent_id` 列新增，用于支持按 (user_id, agent_id, session_id) 查找状态
+> **不含** `agent_id` 和 `state` 列 —— 每个 session 的多个 agent 状态拆到 `agent_states` 表。
+
+#### `agent_states` 表（每个 session 下每个 agent 的独立状态）
+
+```sql
+CREATE TABLE IF NOT EXISTS agent_states (
+    session_id   TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+    agent_id     TEXT NOT NULL,
+    state        JSONB NOT NULL,       -- AgentState.model_dump() 完整 JSON
+    updated_at   TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (session_id, agent_id)
+);
+```
+
+对应 AgentScope 原生的 `(session_id, agent_id)` 键层级语义：
+- `get_session(user_id, agent_id, session_id)` → 查 `agent_states` 表
+- `update_session_state(user_id, agent_id, session_id, state)` → UPSERT 到 `agent_states` 表
 
 #### `messages` 表（替代 Redis 的 session_msgs）
 
@@ -109,8 +126,8 @@ PG_DSN=postgresql+asyncpg://postgres:zxdzxd.123@localhost:5432/agentscope
 |---|---|
 | `__init__(pg_pool)` | 接收 asyncpg 连接池 |
 | `session_exists(session_id) -> bool` | 检查会话是否存在 |
-| `load_agent_state(session_id) -> dict\|None` | 从 sessions.state 加载 AgentState JSON |
-| `save_agent_state(session_id, user_id, state_dict)` | 将 AgentState 写入 sessions.state |
+| `load_agent_state(session_id, agent_id) -> dict\|None` | 从 agent_states 表按 (session_id, agent_id) 加载 AgentState JSON |
+| `save_agent_state(session_id, user_id, agent_id, state_dict)` | UPSERT 到 agent_states 表 |
 | `load_messages(session_id) -> list[dict]` | 从 messages 表查询消息列表 |
 | `append_messages(session_id, user_id, messages)` | 向 messages 表插入消息 + 更新 sessions 元信息 |
 | `save_latest_trace_id(session_id, trace_id)` | 更新 sessions.latest_trace_id |
@@ -127,10 +144,13 @@ PG_DSN=postgresql+asyncpg://postgres:zxdzxd.123@localhost:5432/agentscope
 async def get_session(
     self, user_id: str, agent_id: str, session_id: str
 ) -> Optional[dict]:
-    """加载 SessionRecord（dict 格式），其 .state 字段为 AgentState"""
+    """加载 SessionRecord（dict 格式），查 agent_states 表获取 .state 字段"""
     row = await self.pool.fetchrow(
-        "SELECT * FROM sessions WHERE session_id = $1 AND user_id = $2",
-        session_id, user_id
+        "SELECT s.*, a.state, a.agent_id "
+        "FROM sessions s "
+        "LEFT JOIN agent_states a ON a.session_id = s.session_id AND a.agent_id = $3 "
+        "WHERE s.session_id = $1 AND s.user_id = $2",
+        session_id, user_id, agent_id
     )
     if row is None:
         return None
@@ -139,12 +159,14 @@ async def get_session(
 async def update_session_state(
     self, user_id: str, agent_id: str, session_id: str, state: AgentState
 ) -> None:
-    """将 AgentState 持久化到 sessions.state 列"""
+    """将 AgentState UPSERT 到 agent_states 表"""
     state_json = json.dumps(state.model_dump(), ensure_ascii=False, default=str)
     await self.pool.execute(
-        "UPDATE sessions SET state = $1::jsonb, updated_at = NOW() "
-        "WHERE session_id = $2 AND user_id = $3",
-        state_json, session_id, user_id
+        "INSERT INTO agent_states (session_id, agent_id, state, updated_at) "
+        "VALUES ($1, $2, $3::jsonb, NOW()) "
+        "ON CONFLICT (session_id, agent_id) "
+        "DO UPDATE SET state = EXCLUDED.state, updated_at = NOW()",
+        session_id, agent_id, state_json
     )
 ```
 
@@ -198,16 +220,17 @@ async def lifespan(app: FastAPI):
 改造后流程：
 ```
 1. generate_response() 开始：
-   a. 根据 session_id 从 PostgreSQL 加载已有的 AgentState JSON
-   b. 若存在 → AgentState.model_validate(state_dict)
-   c. 若不存在 → AgentState(session_id=session_id, permission_context=...)
+   a. 从 session_service 获取该 session 下所有已知的 agent_state
+   b. 对每个 agent_id: 若 agent_states 表有记录 → AgentState.model_validate(state_dict)
+   c. 若无记录 → AgentState(session_id=session_id, permission_context=...)
 
-2. 调用 orchestrator_service.run() 时，通过 session_id 传递 agent_state
-   （或修改 orchestrator 内部，创建 agent 时加载已有的 state）
+2. 调用 orchestrator_service.run() 传递 session_id
+   （orchestrator 内部创建 agent 时，会调用 get_session 尝试加载已有 state）
 
 3. generate_response() 流结束后：
-   a. 从已执行的 agent 获取更新后的 state
-   b. 调用 session_service.save_agent_state() 持久化到 sessions.state
+   a. 从 orchestration 过程中获取所有涉及到的 agent 及其最终 state
+   b. 对每个 (agent_id, agent_state) 对，调用 session_service.save_agent_state()
+   c. UPSERT 到 agent_states 表（有则更新，无则插入）
 ```
 
 具体实现方案：
@@ -288,10 +311,12 @@ PGPASSWORD=zxdzxd.123 psql -h localhost -U postgres -d agentscope -c "SELECT 1"
 |---|---|
 | **保留 Redis** | Redis 客户端继续初始化，SessionDAO 改用 PG，Redis 留作其他用途 |
 | **使用 asyncpg** | 异步 PostgreSQL 驱动，与 FastAPI asyncio 兼容 |
+| **三表设计** | sessions（会话元信息）+ agent_states（每个 agent 独立状态）+ messages（消息） |
+| **agent_states 独立表** | 支持一次对话多个 agent，每个 agent 独立 (session_id, agent_id) 主键 |
 | **state 存 JSONB** | AgentState.model_dump() → JSON 存入 JSONB 列 |
-| **消息存独立表** | 支持按需分页查询，CASCADE 自动清理 |
+| **UPSERT 语义** | save_agent_state 用 INSERT ... ON CONFLICT DO UPDATE，兼容首次和后续保存 |
+| **CASCADE 删除** | agent_states 和 messages 通过 FK + ON DELETE CASCADE 关联 sessions |
 | **自动建表** | 应用启动时 CREATE TABLE IF NOT EXISTS，无需手动迁移 |
-| **sessions 表加 agent_id 列** | 支持按 (user_id, agent_id, session_id) 查询状态 |
 | **不迁移旧数据** | Redis TTL 数据不迁移到 PG |
 
 ---
