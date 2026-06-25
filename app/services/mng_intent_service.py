@@ -15,14 +15,18 @@ from app.intent.models import IntentConfig
 logger = logging.getLogger(__name__)
 
 
-async def fetch_mng_intents(mng_url: str) -> List[dict]:
+async def fetch_mng_intents(
+    mng_url: str,
+    access_token: str = "",
+) -> List[dict]:
     """从 MNG 获取外部意图列表。
 
-    调用 MNG /api/intents GET 接口，返回 data 数组。
-    网络异常或非 200 状态码返回空列表。
+    调用 MNG /api/intents GET 接口，在请求头中携带登录时保存的 token。
+    网络异常或非 200 状态码返回空列表（不影响主流程）。
 
     Args:
         mng_url: MNG 基础 URL
+        access_token: 登录时保存的 access_token，用于请求鉴权
 
     Returns:
         外部意图列表（dict 格式），失败时返回空列表
@@ -32,9 +36,13 @@ async def fetch_mng_intents(mng_url: str) -> List[dict]:
         return []
 
     url = f"{mng_url.rstrip('/')}/api/intents"
+    headers = {}
+    if access_token:
+        headers["Authorization"] = f"Bearer {access_token}"
+
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=10) as resp:
+            async with session.get(url, headers=headers, timeout=10) as resp:
                 if resp.status != 200:
                     logger.warning(
                         "fetch_mng_intents failed: HTTP %s from %s",
@@ -45,7 +53,7 @@ async def fetch_mng_intents(mng_url: str) -> List[dict]:
                 data = await resp.json()
                 return data.get("data", [])
     except Exception:
-        logger.exception("fetch_mng_intents 请求异常")
+        logger.exception("fetch_mng_intents 请求异常，不影响主流程")
         return []
 
 

@@ -1,0 +1,63 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment
+.env
+.venv/
+venv/
+env/
+
+# Runtime data (created by container)
+workspaces/
+my-workspace/data/
+my-workspace/sessions/
+
+# Build artifacts
+*.egg-info/
+dist/
+build/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Docker
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# AgentScope temp files
+.trae/
+=2.0.0
+*.html
+
+# Test files
+test.py
+tests/
+
+# AgentScope workspace metadata (rebuilt in container)
+app/my-workspace/.skills
+app/my-workspace/.mcp
+
+# Documents
+*.md
+*.pdf
+*.pptx
+*.xlsx

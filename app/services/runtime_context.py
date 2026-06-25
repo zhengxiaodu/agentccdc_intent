@@ -63,19 +63,21 @@ async def build_runtime_context(app_state, user_id: str) -> RuntimeChatContext:
         IntentConfig(**item) for item in raw_intent_config.get("intents", [])
     ]
 
-    # 2. 获取用户权限
-    permissions = await get_user_permissions(app_state.redis_client, user_id)
+    # 2. 获取用户权限（含 access_token，用于 MNG 接口鉴权）
+    permissions_data = await get_user_permissions(app_state.redis_client, user_id)
+    access_token = ""
     whitelist = []
     blacklist = []
-    if permissions:
-        perms = permissions.get("permissions", {})
+    if permissions_data:
+        access_token = permissions_data.get("access_token", "")
+        perms = permissions_data.get("permissions", {})
         whitelist = perms.get("agent_whitelist", [])
         blacklist = perms.get("skill_blacklist", [])
 
-    # 3. 获取 MNG 外部意图
+    # 3. 获取 MNG 外部意图（请求头中携带 token，失败不影响主流程）
     mng_url = getattr(app_state, "mng_url", "")
     external_skills_dir = getattr(app_state, "external_skills_dir", "")
-    mng_data = await fetch_mng_intents(mng_url)
+    mng_data = await fetch_mng_intents(mng_url, access_token=access_token)
 
     # 4. 构建外部配置（权限过滤）
     external_intents, external_agents = build_external_configs(
