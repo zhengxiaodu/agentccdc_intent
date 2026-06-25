@@ -1,152 +1,118 @@
-# MNG 意图集成与运行时配置管理 Spec
+# MNG 意图集成、WorkspaceManager 与运行时配置管理 Spec
 
 ## Why
 
-当前系统在启动时一次性加载本地 YAML 配置文件（intent_config.yml、agent_config.yml、skill_config.yml）并常驻内存。存在以下问题：
+当前系统的 workspace 管理、配置加载和权限体系存在以下问题：
 
-1. 登录接口返回的 `access_token` 和 `permissions` 未持久化，后续无法按用户查询权限
-2. 意图/智能体/技能配置仅在启动时加载，无法动态集成来自 MNG 管理系统的外部意图
-3. 缺乏运行时权限过滤机制（agent 白名单 / skill 黑名单）
-4. 外部技能目录不可配置
+1. **Workspace 管理原始**：使用单例 `LocalWorkspace` 在启动时一次性加载所有 skill，所有 agent 共享同一个 workspace，无法按用户/会话隔离
+2. **登录权限未持久化**：MNG 返回的 `access_token` 和 `permissions` 未存入 Redis，后续无法查询用户权限
+3. **配置静态加载**：intent/agent/skill 配置仅在启动时加载，无法动态集成 MNG 的外部意图
+4. **无运行时权限过滤**：缺乏 agent 白名单 / skill 黑名单机制
+5. **外部技能目录不可配置**
 
 ## What Changes
 
-### 1. 登录时保存 token/permissions 到 Redis
-- `/login` 接口调用 MNG 系统验证后，将返回的 `access_token` 和 `permissions` 按 `user_id` 保存到 Redis
-- JWT payload 中不再包含 `agent_access` / `skills_blacklist`，改为从 Redis 查询
+### 1. WorkspaceManager 集成（新增）
+- 引入 `WorkspaceManagerBase`（`LocalWorkspaceManager` / `DockerWorkspaceManager`）管理 workspace 生命周期
+- 按 `user_id` / `agent_id` / `session_id` 多级 Key 分配/复用 workspace
+- `.env` 可配置使用哪个 manager 实现（local / docker）
+- workspace 的 workdir 使用 `basedir/{user_id}/{agent_id}/{session_id}` 隔离
 
-### 2. /chat 时动态加载配置
-- 每次 `/chat` 请求开始时，从文件系统重新加载 `intent_config.yml`，并从 MNG 获取外部意图配置，合并后用于本次问答
-- `agent_config.yml` 和 `skill_config.yml` 仍由应用启动时加载（skill 加载开销大），但 `AgentRegistry` 支持运行时追加/清理外部 agent 定义
-- 问答结束后，清理本次注入的外部 intent/agent 配置
+### 2. 登录时保存 token/permissions 到 Redis
+- `/login` 调用 MNG 验证后，将 `access_token` 和 `permissions` 按 `user_id` 保存到 Redis
+- 后续通过 Redis Key `user:permissions:{user_id}` 查询权限
 
-### 3. .env 新增 external_skills_dir
-- 新增配置项 `EXTERNAL_SKILLS_DIR`，默认值 `./external_skills`
-- 用于外部技能的本地路径前缀
+### 3. /chat 时动态加载配置到内存
+- 每次 `/chat` 请求开始时，从文件加载 `intent_config.yml`，从 MNG 获取外部意图，合并后用于本次问答
+- `agent_config.yml` 和 `skill_config.yml` 的基础部分由启动时加载，外部 agent 定义动态注入/清理
+- 问答结束后清理外部配置，释放内存
 
-### 4. MNG 外部意图集成与权限过滤
-- 调用 MNG `/api/intents` 获取外部意图列表
-- 将外部 intent 构建为与 `intent_config.yml` 相同的结构并入内存
-- 将外部 agent 构建为与 `agent_config.yml` 相同的结构，动态追加到 AgentRegistry
-- 将外部 skill 路径指向 `{external_skills_dir}/{skill.code}`
-- 权限过滤：agent 不在 `permissions.agent_whitelist` 中时移除；skill 在 `permissions.skill_blacklist` 中时移除
-- 保持外部 intent-agent-skill 的关联关系
+### 4. .env 新增 external_skills_dir
+- 新增 `EXTERNAL_SKILLS_DIR` 配置项，默认 `./external_skills`
 
-### 5. agent_id 查询验证
-- 验证 `/chat` 接口传入 `agent_id` 时，从动态合并后的内存配置（含外部 agent）中查找智能体定义
+### 5. MNG 外部意图集成与权限过滤
+- 调用 MNG `/api/intents` 获取外部意图
+- 构建 YAML 同构配置，合并到内存
+- 应用 agent 白名单 / skill 黑名单过滤
+- 保持外部 intent-agent-skill 关联关系
+
+### 6. agent_id 走内存配置（验证项）
+- 验证 agent_id 查询能从运行时内存配置中正确查找
 
 ## Impact
 
-- Affected specs: auth, chat, orchestration
 - Affected code:
-  - `app/routes/auth.py` — 修改 login 流程，保存 token/permissions 到 Redis
-  - `app/config.py` — 新增 `EXTERNAL_SKILLS_DIR`
-  - `app/services/auth_service.py` — 新增 Redis 存储逻辑
-  - `app/services/orchestrator_service.py` — 改为每次 /chat 重建 recognizer，支持动态追加 agent
-  - `app/intent/recognizer.py` — 支持动态 setter 更新 intent_configs
-  - `app/agents/registry.py` — 支持运行时追加/移除外部 agent 定义
-  - `.env` — 新增 `EXTERNAL_SKILLS_DIR`
-  - `app/routes/chat.py` — 注入用户权限信息
+  - `.env` — 新增 `WS_MANAGER_TYPE`, `WS_BASEDIR`, `WS_TTL`, `EXTERNAL_SKILLS_DIR`
+  - `app/config.py` — 新增 workspace 和 external_skills 配置
+  - `app/main.py` — 启动时初始化 WorkspaceManager 替代单例 LocalWorkspace
+  - `app/services/workspace_service.py` — **新建**：WorkspaceManager 封装层
+  - `app/services/runtime_context.py` — **新建**：运行时上下文管理
+  - `app/services/mng_intent_service.py` — **新建**：MNG 意图获取与权限过滤
+  - `app/agents/registry.py` — 重构为使用 WorkspaceManager 分配 workspace
+  - `app/routes/auth.py` — 登录时存权限到 Redis
+  - `app/routes/chat.py` — 构建运行时上下文
+  - `app/services/orchestrator_service.py` — 支持运行时上下文注入
 
 ## ADDED Requirements
 
-### Requirement 1: 登录 Token/Permissions 持久化到 Redis
+### Requirement 1: WorkspaceManager 集成
 
-系统 SHALL 在用户登录成功后，将 MNG 返回的 `access_token` 和 `permissions` 按 `user_id` 保存到 Redis。
+系统 SHALL 使用 AgentScope 的 WorkspaceManager 管理工作区生命周期，按 `user_id` / `agent_id` / `session_id` 隔离。
 
-#### Scenario: 登录成功保存权限
-- **WHEN** 用户调用 `/login` 且验证通过
-- **THEN** 系统将 `access_token` 和 `permissions` (含 `agent_whitelist` 和 `skill_blacklist`) 以 JSON 格式存入 Redis，key 为 `user:permissions:{user_id}`
-- **AND** 设置合适的 TTL（与 JWT 过期时间一致）
+#### Scenario: 初始化 WorkspaceManager
+- **WHEN** 应用启动
+- **THEN** 根据 `.env` 中 `WS_MANAGER_TYPE` 配置（`local` / `docker`）初始化对应的 Manager
+- **AND** `WS_MANAGER_TYPE=local` 时使用 `LocalWorkspaceManager`，`=docker` 时使用 `DockerWorkspaceManager`
+- **AND** `basedir` 和 `ttl` 从 `.env` 读取
 
-#### Scenario: 登录接口改为调用 MNG
-- **WHEN** `AUTH_MOCK=false` 时
-- **THEN** 系统调用 MNG 系统的登录接口获取完整的返回格式（含 `access_token` 和 `permissions`）
+#### Scenario: 分配/复用 Workspace
+- **WHEN** `/chat` 请求中需要创建 agent
+- **THEN** 以 `{user_id}/{agent_id}/{session_id}` 为 key 向 Manager 申请 workspace
+- **AND** 若该 key 对应的 workspace 已存在（TTL 内），则复用
+- **AND** 基础 skill 在首次初始化时加载，后续复用不重复加载
 
-#### Scenario: Redis 中查询用户权限
-- **WHEN** 需要查询用户权限时
-- **THEN** 从 Redis 读取 `user:permissions:{user_id}` 并解析 JSON，获取 `access_token`、`agent_whitelist`、`skill_blacklist`
+#### Scenario: 释放 Workspace
+- **WHEN** `/chat` 请求结束
+- **THEN** workspace 归还给 Manager，由 Manager 按 TTL 自动淘汰
 
-### Requirement 2: /chat 时动态加载配置
+### Requirement 2: 登录 Token/Permissions 持久化到 Redis
 
-系统 SHALL 在每次 `/chat` 请求开始时，重新加载并合并配置，问答结束后释放外部配置。
+[同前 — 登录成功保存 access_token 和 permissions 到 Redis]
 
-#### Scenario: 每次 /chat 重新加载 intent 配置
-- **WHEN** 用户调用 `/chat`
-- **THEN** 系统从文件重新加载 `intent_config.yml` 作为基础意图配置
-- **AND** 从 MNG `/api/intents` 获取外部意图列表
-- **AND** 合并基础意图和外部意图，构建完整的 `IntentRecognizer` 实例
-- **AND** 将外部 agent 定义动态追加到 `AgentRegistry`
-- **AND** 问答结束后，从 `AgentRegistry` 中移除本次追加的外部 agent 定义
+### Requirement 3: /chat 时动态加载配置
 
-#### Scenario: 配置生命周期管理
-- **WHEN** `/chat` 请求开始
-- **THEN** 创建本次请求的运行时上下文（含合并后的 intent config、动态 agent registry）
-- **WHEN** `/chat` 请求结束（正常或异常）
-- **THEN** 清理运行时上下文中的外部配置，释放内存
+[同前 — 每次 /chat 重新加载 intent 配置，合并外部意图，问答结束清理]
 
-### Requirement 3: external_skills_dir 配置项
+### Requirement 4: external_skills_dir 配置项
 
-系统 SHALL 在 `.env` 中提供 `EXTERNAL_SKILLS_DIR` 配置项。
+[同前 — .env 新增配置项]
 
-#### Scenario: 读取配置
-- **WHEN** 系统需要定位外部技能目录
-- **THEN** 从 `config.py` 读取 `EXTERNAL_SKILLS_DIR` 值（默认 `./external_skills`）
+### Requirement 5: MNG 外部意图集成与权限过滤
 
-### Requirement 4: MNG 外部意图集成与权限过滤
+[同前 — 从 MNG 获取外部意图，构建配置，权限过滤]
 
-系统 SHALL 从 MNG 获取外部意图，构建配置并应用权限过滤。
+### Requirement 6: agent_id 查询验证
 
-#### Scenario: 获取外部意图
-- **WHEN** 调用 MNG `/api/intents`（GET 方法）
-- **THEN** 解析返回的 `data` 数组，每一项包含 `id`、`name`、`intentCode`、`agents[]`、`skills[]`
-- **AND** 将外部 intent 构建为 `IntentConfig` 结构，`id` 使用 `intentCode`
-- **AND** 将外部 agent 构建为 `AgentDefinition` 结构，`id` 使用 `agent.code`
-- **AND** 将外部 skill 路径设为 `{external_skills_dir}/{skill.code}`
-
-#### Scenario: 权限过滤 - Agent 白名单
-- **WHEN** 外部 agent 的 `agent.id` (即 `agent.code`) 不在当前用户的 `permissions.agent_whitelist` 中
-- **THEN** 该 agent 不得加入内存配置
-- **AND** 对应 intent 中移除该 agent 关联
-- **AND** 若 intent 下所有 agent 都被移除，则整个 intent 不加入配置
-
-#### Scenario: 权限过滤 - Skill 黑名单
-- **WHEN** 外部 skill 的 `skill.id` (即 `skill.code`) 在当前用户的 `permissions.skill_blacklist` 中
-- **THEN** 该 skill 不得加入内存配置
-- **AND** 对应 agent 中移除该 skill 关联
-
-#### Scenario: 外部 Intent 合并
-- **WHEN** 外部 intent 通过权限过滤后
-- **THEN** 追加到 intent_configs 列表末尾（先基础 intent，后外部 intent）
-- **AND** 保持外部 intent-agent-skill 的关联关系
-
-### Requirement 5: agent_id 查询验证
-
-系统 SHALL 验证 `agent_id` 能在动态合并后的内存配置中被正确查询。
-
-#### Scenario: 使用外部 agent_id 调用 /chat
-- **WHEN** 用户传入 `agent_id` 对应的外部 agent
-- **THEN** 系统从动态合并后的 `AgentRegistry` 中查找到该 agent 定义并执行
-
-#### Scenario: 外部 agent_id 不存在
-- **WHEN** 用户传入的 `agent_id` 不在当前会话的内存配置中
-- **THEN** 返回错误事件 "agent_id 不存在"
+[同前 — 验证 agent_id 从内存配置查询]
 
 ## Key Design Decisions
 
-### D1: 配置加载策略
-- **基础 skill/workspace**：应用启动时一次性加载，常驻内存（`LocalWorkspace` 初始化开销大）
-- **基础 agent 定义**：应用启动时加载，常驻内存
-- **基础 intent 配置**：每次 `/chat` 从文件重新加载（确保配置最新）
-- **外部 intent/agent**：每次 `/chat` 从 MNG 获取，动态注入，问答结束后清理
+### D1: Workspace 隔离策略
+- Key = `{user_id}/{agent_id}/{session_id}`
+- 同一用户同一 agent 同一 session 复用同一个 workspace
+- Manager 按 TTL 淘汰空闲 workspace
 
-### D2: 权限数据传递
-- 登录时将权限存入 Redis（key: `user:permissions:{user_id}`）
-- `/chat` 时从 Redis 读取当前用户权限（或从 JWT 解析）
-- 当前选择：从 Redis 读取，避免 JWT payload 膨胀
+### D2: 配置生命周期
+- **基础 skill**：WorkspaceManager 初始化时加载一次，skill 路径从 `skill_config.yml` 读取
+- **基础 agent 定义**：启动时加载到 `AgentRegistry`，常驻
+- **基础 intent 配置**：每次 `/chat` 从文件重新加载（确保最新）
+- **外部 intent/agent/skill**：每次 `/chat` 从 MNG 获取，问答结束后清理
 
-### D3: 外部 Skill 加载时机
-- 外部 skill 需要被 `LocalWorkspace` 加载才能使用
-- 选项 A：在每次 `/chat` 时发现并加载外部 skill（灵活性高，性能开销大）
-- 选项 B：在应用启动时或 lazily 加载 `external_skills_dir` 下所有 skill（推荐）
-- **当前选择**：选项 B，外部 skill 在启动时或首次需要时加载到 workspace
+### D3: 权限传递
+- 登录时写入 Redis（key: `user:permissions:{user_id}`）
+- `/chat` 时从 Redis 读取
+
+### D4: WorkspaceManager 封装
+- 不直接使用 agentscope 的 `create_app`（当前已经是自定义 FastAPI 架构）
+- 封装 `WorkspaceService` 管理 Manager 的分配/释放
+- `AgentRegistry` 通过 `WorkspaceService` 获取 workspace 而非直接创建 `LocalWorkspace`

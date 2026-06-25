@@ -39,6 +39,7 @@ class PipelineOrchestrator(BaseOrchestrator):
         self,
         intent_result: IntentResult,
         session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         agent_states: Optional[Dict[str, AgentState]] = None,
     ) -> AsyncGenerator[str, None]:
         """按固定顺序串行执行意图。"""
@@ -75,6 +76,7 @@ class PipelineOrchestrator(BaseOrchestrator):
                         intent,
                         prior_context=prior_context,
                         session_id=session_id,
+                        user_id=user_id,
                         agent_state=agent_state,
                     ),
                     timeout=self._step_timeout,

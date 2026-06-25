@@ -167,6 +167,18 @@ class IntentRecognizer:
             relation="independent",
         )
 
+    def update_intent_configs(self, intent_configs: List[IntentConfig]):
+        """更新意图配置（运行时动态切换）。
+
+        Args:
+            intent_configs: 新的意图配置列表
+        """
+        self._intent_configs = intent_configs
+        self._intent_map = {ic.id: ic for ic in intent_configs}
+        self._intents_desc = "\n".join(
+            [f"- {ic.id}: {ic.name} — {ic.description}" for ic in intent_configs]
+        )
+
     def get_orchestration_mode(self, result: IntentResult) -> str:
         """根据 IntentResult 的 relation 决定编排模式。
 

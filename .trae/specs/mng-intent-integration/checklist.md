@@ -1,31 +1,44 @@
 # Checklist
 
-- [ ] R1.1: 登录成功调用 MNG 接口后，`access_token` 和 `permissions` 正确存入 Redis（key: `user:permissions:{user_id}`）
-- [ ] R1.2: Redis 中存储的权限数据 TTL 与 JWT 过期时间一致
-- [ ] R1.3: 能从 Redis 正确查询用户的 `agent_whitelist` 和 `skill_blacklist`
-- [ ] R1.4: `AUTH_MOCK=true` 时使用模拟数据（向后兼容）；`AUTH_MOCK=false` 时调用 MNG 接口
+## Requirement 1: WorkspaceManager 集成
+- [ ] R1.1: `.env` 中存在 `WS_MANAGER_TYPE`、`WS_BASEDIR`、`WS_TTL` 配置项，有合理默认值
+- [ ] R1.2: `WS_MANAGER_TYPE=local` 时初始化 `LocalWorkspaceManager`，`=docker` 时初始化 `DockerWorkspaceManager`
+- [ ] R1.3: `WorkspaceService.get_workspace(user_id, agent_id, session_id)` 返回隔离的 workspace，key 为 `{user_id}/{agent_id}/{session_id}`
+- [ ] R1.4: 同一 key 在 TTL 内重复获取时复用已有 workspace
+- [ ] R1.5: `AgentRegistry.create_agent()` 通过 `WorkspaceService` 获取 workspace
+- [ ] R1.6: 基础 skill 在 workspace 首次初始化时正确加载
 
-- [ ] R2.1: `.env` 中存在 `EXTERNAL_SKILLS_DIR` 配置项，默认值为 `./external_skills`
-- [ ] R2.2: `config.py` 正确导出 `EXTERNAL_SKILLS_DIR` 常量
+## Requirement 2: 登录 Token/Permissions 持久化
+- [ ] R2.1: 登录成功后 `access_token` 和 `permissions` 存入 Redis，key `user:permissions:{user_id}`
+- [ ] R2.2: Redis TTL 与 JWT 过期时间一致
+- [ ] R2.3: 能从 Redis 正确查询用户的 `agent_whitelist` 和 `skill_blacklist`
 
-- [ ] R3.1: 每次 `/chat` 请求开始时，从文件重新加载 `intent_config.yml` 作为基础 intent 配置
-- [ ] R3.2: 从 MNG `/api/intents` 获取外部意图并与基础 intent 合并
-- [ ] R3.3: `RuntimeChatContext` 正确持有合并后的 intent 配置、外部 agent 定义、用户权限
-- [ ] R3.4: 外部 agent 定义在 `/chat` 开始前注入 `AgentRegistry`，问答结束后清理
-- [ ] R3.5: `IntentRecognizer` 在每次 `/chat` 时使用合并后的 intent 配置重建
+## Requirement 3: /chat 动态加载配置
+- [ ] R3.1: 每次 `/chat` 从文件重新加载 `intent_config.yml`
+- [ ] R3.2: 从 MNG 获取外部意图并与基础 intent 合并
+- [ ] R3.3: `RuntimeChatContext` 正确持有合并后的 intent config、外部 agent 定义、用户权限
+- [ ] R3.4: 外部 agent 在 `/chat` 开始前注入 `AgentRegistry`，结束后清理
+- [ ] R3.5: `IntentRecognizer` 每次使用合并后的 intent config 重建
 
-- [ ] R4.1: MNG `/api/intents` 的响应正确解析，外部 intent/agent/skill 结构正确构建
-- [ ] R4.2: 外部 intent 的 id 使用 `intentCode` 字段
-- [ ] R4.3: 外部 agent 的 id 使用 `agent.code` 字段，构建为 `AgentDefinition`
-- [ ] R4.4: 外部 skill 的 directory 设为 `{EXTERNAL_SKILLS_DIR}/{skill.code}`
-- [ ] R4.5: 外部 agent 不在 `agent_whitelist` 中时被移除，对应 intent 中清除关联
-- [ ] R4.6: 外部 skill 在 `skill_blacklist` 中时被移除，对应 agent 中清除关联
-- [ ] R4.7: intent 下所有 agent 都被移除时，该 intent 不加入配置
-- [ ] R4.8: 外部 intent 追加在基础 intent 之后，两者在 `IntentRecognizer` 中同时生效
+## Requirement 4: external_skills_dir
+- [ ] R4.1: `.env` 中存在 `EXTERNAL_SKILLS_DIR` 配置项
+- [ ] R4.2: `config.py` 正确导出 `EXTERNAL_SKILLS_DIR`
 
-- [ ] R5.1: 传入外部 agent_id 时，能从运行时上下文中找到 agent 定义并正常执行
-- [ ] R5.2: 传入被权限过滤移除的外部 agent_id 时，返回正确的错误事件
-- [ ] R5.3: 传入基础 agent_id 时，行为与之前一致（不依赖 MNG）
+## Requirement 5: MNG 外部意图集成与权限过滤
+- [ ] R5.1: MNG `/api/intents` 响应正确解析
+- [ ] R5.2: 外部 intent.id 使用 `intentCode`
+- [ ] R5.3: 外部 agent.id 使用 `agent.code`，构建为 `AgentDefinition`
+- [ ] R5.4: 外部 skill.directory 设为 `{EXTERNAL_SKILLS_DIR}/{skill.code}`
+- [ ] R5.5: agent 不在白名单中时移除，intent 中清除关联
+- [ ] R5.6: skill 在黑名单中时移除，agent 中清除关联
+- [ ] R5.7: intent 下所有 agent 被移除时，该 intent 不加入配置
+- [ ] R5.8: 外部 intent 追加在基础 intent 之后，两者同时生效
 
-- [ ] 集成：所有模块编译通过，无 import 错误
-- [ ] 集成：完整的登录 → /chat（含外部意图识别 + 外部 agent 问答）流程可正常运行
+## Requirement 6: agent_id 查询验证
+- [ ] R6.1: 传入外部 agent_id 能从运行时上下文找到定义并执行
+- [ ] R6.2: 被权限过滤移除的 agent_id 返回正确错误事件
+- [ ] R6.3: 基础 agent_id 行为不变
+
+## 集成
+- [ ] 所有模块编译通过，无 import 错误
+- [ ] 完整的登录 → /chat（含 WorkspaceManager + 外部意图 + 权限过滤 + 动态配置）流程可正常运行
