@@ -69,6 +69,7 @@ class ReActOrchestrator(BaseOrchestrator):
         self,
         intent_result: IntentResult,
         session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         agent_states: Optional[Dict[str, AgentState]] = None,
     ) -> AsyncGenerator[str, None]:
         """执行 ReAct 循环。"""
@@ -132,7 +133,8 @@ class ReActOrchestrator(BaseOrchestrator):
 
             # 执行智能体
             observation = await self._execute_action(
-                action_name, action_args, intent_result, session_id, agent_states
+                action_name, action_args, intent_result,
+                session_id, user_id, agent_states,
             )
 
             # Observe：追加到 scratch
@@ -211,6 +213,7 @@ class ReActOrchestrator(BaseOrchestrator):
         action_args: dict,
         intent_result: IntentResult,
         session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         agent_states: Optional[Dict[str, AgentState]] = None,
     ) -> str:
         """执行 ReAct 中选定的一步动作。"""
@@ -232,6 +235,7 @@ class ReActOrchestrator(BaseOrchestrator):
             result = await self._run_single_agent(
                 intent,
                 session_id=session_id,
+                user_id=user_id,
                 agent_state=agent_state,
             )
             if result.final_state:

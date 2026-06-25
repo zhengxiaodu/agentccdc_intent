@@ -23,10 +23,11 @@ class AgentFactory:
     def __init__(self, registry: AgentRegistry):
         self.registry = registry
 
-    def create_for_agent(
+    async def create_for_agent(
         self,
         agent_id: str,
         session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         agent_state: Optional[AgentState] = None,
     ) -> Optional[Agent]:
         """根据 agent_id 创建智能体实例。
@@ -34,27 +35,34 @@ class AgentFactory:
         Args:
             agent_id: 智能体标识（来自 intent_config 中 intent.agent 的映射）
             session_id: 会话 id
+            user_id: 用户 id（用于工作区键）
             agent_state: 已恢复的状态（多轮上下文）
 
         Returns:
             Agent 实例；agent_id 未知时返回 None，由调用方决定降级策略
         """
-        agent = self.registry.create_agent(
+        agent = await self.registry.create_agent(
             agent_id=agent_id,
             session_id=session_id,
+            user_id=user_id,
             agent_state=agent_state,
         )
         if agent is None:
             logger.warning(f"[AgentFactory] 无法为 agent_id={agent_id} 创建智能体")
         return agent
 
-    def create_fallback(self, session_id: Optional[str] = None) -> Optional[Agent]:
+    async def create_fallback(
+        self,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> Optional[Agent]:
         """降级兜底：意图识别失败时，强制走 general_agent。
 
         若 general_agent 也不存在则返回 None（极端情况）。
         """
         logger.info("[AgentFactory] 使用兜底智能体 general_agent")
-        return self.registry.create_agent(
+        return await self.registry.create_agent(
             agent_id="general_agent",
             session_id=session_id,
+            user_id=user_id,
         )

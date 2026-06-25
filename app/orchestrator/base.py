@@ -52,6 +52,7 @@ class BaseOrchestrator(ABC):
         intent: Intent,
         prior_context: str = "",
         session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         agent_state: Optional[AgentState] = None,
     ) -> TaskResult:
         """执行单个智能体，收集所有 SSE 事件。
@@ -60,12 +61,14 @@ class BaseOrchestrator(ABC):
             intent: 要执行的意图
             prior_context: 前置步骤的输出（流水线模式中使用）
             session_id: 会话 id
+            user_id: 用户 id（用于工作区键）
             agent_state: 已恢复的 AgentState（多轮上下文），为 None 则新建
         """
         agent_id = intent.agent or "general_agent"
-        agent = self.agent_factory.create_for_agent(
+        agent = await self.agent_factory.create_for_agent(
             agent_id=agent_id,
             session_id=session_id,
+            user_id=user_id,
             agent_state=agent_state,
         )
         if agent is None:
@@ -121,6 +124,7 @@ class BaseOrchestrator(ABC):
         self,
         intent_result: IntentResult,
         session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         agent_states: Optional[Dict[str, AgentState]] = None,
     ) -> AsyncGenerator[str, None]:
         """执行编排，yield SSE 事件字符串。"""

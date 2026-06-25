@@ -42,6 +42,7 @@ class ParallelOrchestrator(BaseOrchestrator):
         self,
         intent_result: IntentResult,
         session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         agent_states: Optional[Dict[str, AgentState]] = None,
     ) -> AsyncGenerator[str, None]:
         """并行执行所有意图。"""
@@ -57,7 +58,7 @@ class ParallelOrchestrator(BaseOrchestrator):
 
         # ① 并行执行所有意图
         tasks = [
-            self._run_with_timeout(intent, session_id, agent_states)
+            self._run_with_timeout(intent, session_id, user_id, agent_states)
             for intent in intents
         ]
 
@@ -121,12 +122,18 @@ class ParallelOrchestrator(BaseOrchestrator):
         self,
         intent,
         session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         agent_states: Optional[Dict[str, AgentState]] = None,
     ) -> TaskResult:
         """带超时的智能体执行。"""
         agent_id = intent.agent or "general_agent"
         agent_state = (agent_states or {}).get(agent_id)
         return await asyncio.wait_for(
-            self._run_single_agent(intent, session_id=session_id, agent_state=agent_state),
+            self._run_single_agent(
+                intent,
+                session_id=session_id,
+                user_id=user_id,
+                agent_state=agent_state,
+            ),
             timeout=self._timeout,
         )

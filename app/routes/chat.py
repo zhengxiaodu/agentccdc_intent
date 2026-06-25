@@ -6,6 +6,11 @@ from fastapi.responses import StreamingResponse
 from app.dependencies import current_user
 from app.models.chat import ChatRequest
 from app.services.chat_service import generate_response
+from app.services.runtime_context import (
+    apply_context,
+    build_runtime_context,
+    cleanup_context,
+)
 
 router = APIRouter()
 
@@ -26,17 +31,24 @@ async def chat(request: Request, body: ChatRequest, user: dict = Depends(current
         }
         yield f"data: {json.dumps(session_event, ensure_ascii=False)}\n\n"
 
-        # 再发送聊天流式事件（多智能体编排 / 单智能体直接问答）
-        async for event in generate_response(
-            orchestrator_service=request.app.state.orchestrator_service,
-            messages=body.messages,
-            session_id=session_id,
-            user_id=user_id,
-            session_service=session_service,
-            langfuse_service=request.app.state.langfuse_service,
-            agent_id=body.agent_id,
-        ):
-            yield event
+        # 构建运行时上下文（外部意图 + 权限过滤）
+        context = await build_runtime_context(request.app.state, user_id)
+        await apply_context(request.app.state.orchestrator_service, context)
+
+        try:
+            # 再发送聊天流式事件（多智能体编排 / 单智能体直接问答）
+            async for event in generate_response(
+                orchestrator_service=request.app.state.orchestrator_service,
+                messages=body.messages,
+                session_id=session_id,
+                user_id=user_id,
+                session_service=session_service,
+                langfuse_service=request.app.state.langfuse_service,
+                agent_id=body.agent_id,
+            ):
+                yield event
+        finally:
+            await cleanup_context(request.app.state.orchestrator_service, context)
 
     try:
         return StreamingResponse(stream(), media_type="text/event-stream")

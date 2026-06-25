@@ -1,0 +1,77 @@
+version: "3.8"
+
+services:
+  # ========== AgentScope AI 问答系统 ==========
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agentscope-app
+    ports:
+      - "7010:7010"
+    env_file:
+      - .env
+    environment:
+      # Override hostnames for Docker networking
+      - REDIS_URL=redis://redis:6379/0
+      - PG_HOST=postgres
+      - MNG_URL=${MNG_URL:-http://host.docker.internal:7009}
+    volumes:
+      # Mount external skills directory for hot-reload
+      - ./external_skills:/app/external_skills
+      # Persist workspace data
+      - workspace_data:/app/workspaces
+    depends_on:
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - agentscope-net
+    # For accessing host services (e.g. MNG running on host)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ========== Redis（权限存储） ==========
+  redis:
+    image: redis:7-alpine
+    container_name: agentscope-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    networks:
+      - agentscope-net
+
+  # ========== PostgreSQL（会话持久化） ==========
+  postgres:
+    image: postgres:16-alpine
+    container_name: agentscope-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${PG_USER:-postgres}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-zxdzxd.123}
+      POSTGRES_DB: ${PG_DATABASE:-agentscope}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-postgres} -d ${PG_DATABASE:-agentscope}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - agentscope-net
+
+volumes:
+  redis_data:
+  postgres_data:
+  workspace_data:
+
+networks:
+  agentscope-net:
+    driver: bridge
