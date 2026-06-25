@@ -5,7 +5,7 @@ import asyncpg
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
-from app.config import MODEL_CONFIG_PATH, REDIS_URL, PG_DSN, WS_MANAGER_TYPE, WS_BASEDIR, WS_TTL, MNG_URL, EXTERNAL_SKILLS_DIR
+from app.config import MODEL_CONFIG_PATH, REDIS_URL, PG_DSN, WS_MANAGER_TYPE, WS_BASEDIR, WS_TTL, DOCKER_BASE_IMAGE, DOCKER_NODE_VERSION, DOCKER_EXTRA_PIP, MNG_URL, EXTERNAL_SKILLS_DIR
 from app.services.chat_service import load_model_config
 from app.services.orchestrator_service import OrchestratorService
 from app.services.workspace_service import WorkspaceService
@@ -27,6 +27,9 @@ async def lifespan(app: FastAPI):
         manager_type=WS_MANAGER_TYPE,
         basedir=WS_BASEDIR,
         ttl=WS_TTL,
+        docker_base_image=DOCKER_BASE_IMAGE,
+        docker_node_version=DOCKER_NODE_VERSION,
+        docker_extra_pip=DOCKER_EXTRA_PIP,
     )
     app.state.workspace_service = workspace_service
 

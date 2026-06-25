@@ -12,7 +12,7 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-# 尝试导入新版 WorkspaceManager API，回退到旧版 LocalWorkspace
+# 尝试导入新版 WorkspaceManager API，回退到旧版 workspace
 try:
     from agentscope.app.workspace_manager import (
         DockerWorkspaceManager,
@@ -21,9 +21,42 @@ try:
 
     HAS_NEW_WS_MANAGER = True
 except ImportError:
-    from agentscope.workspace import LocalWorkspace
+    from agentscope.workspace import DockerWorkspace, LocalWorkspace
 
     HAS_NEW_WS_MANAGER = False
+
+
+def _parse_extra_pip(extra_pip_str: str) -> List[str]:
+    """解析逗号分隔的额外 pip 包列表。"""
+    if not extra_pip_str or not extra_pip_str.strip():
+        return []
+    return [pkg.strip() for pkg in extra_pip_str.split(",") if pkg.strip()]
+
+
+def _build_docker_workspace_kwargs(
+    base_image: str,
+    node_version: str,
+    extra_pip: str,
+) -> dict:
+    """构建 Docker workspace 额外关键字参数。
+
+    Args:
+        base_image: Docker 基础镜像
+        node_version: Node.js 版本（空字符串则不安装）
+        extra_pip: 额外 pip 包（逗号分隔）
+
+    Returns:
+        传给 DockerWorkspace / DockerWorkspaceManager 的关键字参数字典
+    """
+    kwargs: dict = {}
+    if base_image:
+        kwargs["base_image"] = base_image
+    if node_version:
+        kwargs["node_version"] = node_version
+    pip_list = _parse_extra_pip(extra_pip)
+    if pip_list:
+        kwargs["extra_pip"] = pip_list
+    return kwargs
 
 
 class WorkspaceService:
@@ -37,16 +70,27 @@ class WorkspaceService:
         manager_type: str = "local",
         basedir: str = "./workspaces",
         ttl: float = 3600.0,
+        docker_base_image: str = "python:3.11-slim",
+        docker_node_version: str = "",
+        docker_extra_pip: str = "",
     ):
         """
         Args:
             manager_type: 管理器类型，"local" 或 "docker"
             basedir: 工作区基础目录
             ttl: 工作区 TTL（秒），超时未访问的自动清理
+            docker_base_image: Docker 基础镜像（仅 manager_type="docker" 时生效）
+            docker_node_version: Docker 容器内安装的 Node.js 版本
+            docker_extra_pip: Docker 容器内额外 pip 包（逗号分隔）
         """
         self._manager_type = manager_type
         self._basedir = basedir
         self._ttl = ttl
+        self._docker_kwargs = _build_docker_workspace_kwargs(
+            docker_base_image,
+            docker_node_version,
+            docker_extra_pip,
+        )
         self._base_workspace: Any = None
         self._skill_paths: List[str] = []
 
@@ -76,18 +120,32 @@ class WorkspaceService:
         self._skill_paths = await self._load_skill_config(skill_config_path)
 
         if HAS_NEW_WS_MANAGER:
-            cls = (
-                DockerWorkspaceManager
-                if self._manager_type == "docker"
-                else LocalWorkspaceManager
-            )
-            ws = cls(basedir=self._basedir, ttl=self._ttl)
+            is_docker = self._manager_type == "docker"
+            if is_docker:
+                ws = DockerWorkspaceManager(
+                    basedir=self._basedir,
+                    ttl=self._ttl,
+                    **self._docker_kwargs,
+                )
+            else:
+                ws = LocalWorkspaceManager(
+                    basedir=self._basedir,
+                    ttl=self._ttl,
+                )
         else:
-            ws = LocalWorkspace(
-                workdir=self._basedir,
-                default_mcps=[],
-                skill_paths=self._skill_paths,
-            )
+            if self._manager_type == "docker":
+                ws = DockerWorkspace(
+                    workdir=self._basedir,
+                    default_mcps=[],
+                    skill_paths=self._skill_paths,
+                    **self._docker_kwargs,
+                )
+            else:
+                ws = LocalWorkspace(
+                    workdir=self._basedir,
+                    default_mcps=[],
+                    skill_paths=self._skill_paths,
+                )
 
         await ws.initialize()
         self._base_workspace = ws
@@ -118,18 +176,32 @@ class WorkspaceService:
         key = f"{user_id}/{agent_id}/{session_id}"
 
         if HAS_NEW_WS_MANAGER:
-            cls = (
-                DockerWorkspaceManager
-                if self._manager_type == "docker"
-                else LocalWorkspaceManager
-            )
-            ws = cls(basedir=os.path.join(self._basedir, key), ttl=self._ttl)
+            is_docker = self._manager_type == "docker"
+            if is_docker:
+                ws = DockerWorkspaceManager(
+                    basedir=os.path.join(self._basedir, key),
+                    ttl=self._ttl,
+                    **self._docker_kwargs,
+                )
+            else:
+                ws = LocalWorkspaceManager(
+                    basedir=os.path.join(self._basedir, key),
+                    ttl=self._ttl,
+                )
         else:
-            ws = LocalWorkspace(
-                workdir=os.path.join(self._basedir, key),
-                default_mcps=[],
-                skill_paths=self._skill_paths,
-            )
+            if self._manager_type == "docker":
+                ws = DockerWorkspace(
+                    workdir=os.path.join(self._basedir, key),
+                    default_mcps=[],
+                    skill_paths=self._skill_paths,
+                    **self._docker_kwargs,
+                )
+            else:
+                ws = LocalWorkspace(
+                    workdir=os.path.join(self._basedir, key),
+                    default_mcps=[],
+                    skill_paths=self._skill_paths,
+                )
 
         await ws.initialize()
         return ws

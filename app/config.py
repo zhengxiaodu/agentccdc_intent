@@ -58,5 +58,10 @@ WS_MANAGER_TYPE = os.getenv("WS_MANAGER_TYPE", "local")
 WS_BASEDIR = os.getenv("WS_BASEDIR", "./workspaces")
 WS_TTL = float(os.getenv("WS_TTL", "3600"))
 
+# Docker Workspace 配置
+DOCKER_BASE_IMAGE = os.getenv("DOCKER_BASE_IMAGE", "python:3.11-slim")
+DOCKER_NODE_VERSION = os.getenv("DOCKER_NODE_VERSION", "")
+DOCKER_EXTRA_PIP = os.getenv("DOCKER_EXTRA_PIP", "")
+
 # 外部技能目录
 EXTERNAL_SKILLS_DIR = os.getenv("EXTERNAL_SKILLS_DIR", "./external_skills")
