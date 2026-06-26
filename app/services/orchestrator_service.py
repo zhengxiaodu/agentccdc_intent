@@ -14,7 +14,8 @@ from agentscope.state import AgentState
 
 from app.config import AGENT_CONFIG_PATH, INTENT_CONFIG_PATH, SKILL_CONFIG_PATH
 from app.agents.factory import AgentFactory
-from app.agents.registry import AgentRegistry, load_agent_definitions, load_all_skills
+from app.agents.registry import AgentRegistry, load_agent_definitions
+from app.services.workspace_service import WorkspaceService
 from app.intent.models import IntentConfig, IntentResult
 from app.intent.rewriter import QueryRewriter
 from app.intent.recognizer import IntentRecognizer, load_intent_config
@@ -43,6 +44,7 @@ class OrchestratorService:
         rewriter: QueryRewriter,
         recognizer: IntentRecognizer,
         orchestrator_params: dict,
+        workspace_service: Optional[WorkspaceService] = None,
         think_client: Optional[AsyncOpenAI] = None,
         think_model_config: Optional[dict] = None,
         think_prompt: str = "",
@@ -52,9 +54,13 @@ class OrchestratorService:
         self.rewriter = rewriter
         self.recognizer = recognizer
         self._orchestrator_params = orchestrator_params
+        self._workspace_service = workspace_service
         self._think_client = think_client
         self._think_model_config = think_model_config or {}
         self._think_prompt = think_prompt
+
+        # 保存基础识别器，用于运行时动态恢复
+        self._base_recognizer = recognizer
 
         # 缓存编排器实例
         self._parallel: Optional[ParallelOrchestrator] = None
@@ -63,14 +69,37 @@ class OrchestratorService:
         self._last_orchestrator: Optional[Any] = None
 
     @classmethod
-    async def create(cls, model_config: dict) -> "OrchestratorService":
-        """工厂方法：从配置文件创建完整编排服务。"""
+    async def create(
+        cls,
+        model_config: dict,
+        workspace_service: Optional[WorkspaceService] = None,
+    ) -> "OrchestratorService":
+        """工厂方法：从配置文件创建完整编排服务。
+
+        Args:
+            model_config: 模型配置字典
+            workspace_service: 可选的 WorkspaceService 实例。若传入则使用现成的，
+                               否则内部自动创建。
+        """
         # ① 加载智能体定义 + skill
         agent_defs = load_agent_definitions(AGENT_CONFIG_PATH)
-        workspace, all_tools, all_skills_meta = await load_all_skills(
-            skill_config_path=SKILL_CONFIG_PATH,
-            workdir="./my-workspace",
+
+        # 初始化 WorkspaceService 并加载基础工作区
+        if workspace_service is None:
+            workspace_service = WorkspaceService(
+                manager_type=model_config.get("workspace", {}).get(
+                    "manager_type", "local"
+                ),
+                basedir=model_config.get("workspace", {}).get(
+                    "basedir", "./workspaces"
+                ),
+                ttl=model_config.get("workspace", {}).get("ttl", 3600.0),
+            )
+        base_workspace = await workspace_service.get_base_workspace(
+            SKILL_CONFIG_PATH,
         )
+        all_tools = await base_workspace.list_tools()
+        all_skills_meta = await base_workspace.list_skills()
 
         # 创建模型工厂函数
         default_model_cfg = model_config.get("models", {}).get("default", {})
@@ -80,7 +109,7 @@ class OrchestratorService:
         # ② 创建 AgentRegistry
         registry = AgentRegistry(
             definitions=agent_defs,
-            workspace=workspace,
+            workspace_service=workspace_service,
             all_tools=all_tools,
             all_skills_meta=all_skills_meta,
             create_model_fn=_create_model,
@@ -136,6 +165,7 @@ class OrchestratorService:
             rewriter=rewriter,
             recognizer=recognizer,
             orchestrator_params=orchestrator_params,
+            workspace_service=workspace_service,
             think_client=intent_client,
             think_model_config=intent_model_cfg,
             think_prompt=think_prompt,
@@ -192,6 +222,26 @@ class OrchestratorService:
             if r.final_state:
                 states[r.agent_id] = r.final_state
         return states
+
+    def set_runtime_recognizer(self, intent_configs: List[IntentConfig]):
+        """设置运行时意图识别器（使用合并后的意图配置）。
+
+        创建一个新的 IntentRecognizer 实例，复用原始识别器的
+        client / model_config / recognition_prompt / default_orchestration，
+        仅替换 intent_configs。
+        """
+        new_recognizer = IntentRecognizer(
+            client=self._base_recognizer._client,
+            model_config=self._base_recognizer._model_config,
+            recognition_prompt=self._base_recognizer._recognition_prompt,
+            intent_configs=intent_configs,
+            default_orchestration=self._base_recognizer._default_orchestration,
+        )
+        self.recognizer = new_recognizer
+
+    def restore_base_recognizer(self):
+        """恢复基础意图识别器。"""
+        self.recognizer = self._base_recognizer
 
     @staticmethod
     def _event(data: dict) -> str:
@@ -291,9 +341,10 @@ class OrchestratorService:
                     logger.debug(f"[OrchestratorService] 无法加载 {agent_id} 状态，将新建")
 
             # 创建 agent 实例
-            agent = self.agent_factory.create_for_agent(
+            agent = await self.agent_factory.create_for_agent(
                 agent_id=agent_id,
                 session_id=session_id,
+                user_id=user_id,
                 agent_state=agent_state,
             )
             if agent is None:
@@ -402,6 +453,7 @@ class OrchestratorService:
         async for event_str in orchestrator.run(
             intent_result,
             session_id=session_id,
+            user_id=user_id,
             agent_states=agent_states,
         ):
             yield event_str

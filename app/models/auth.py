@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 
 class LoginRequest(BaseModel):
@@ -21,3 +21,4 @@ class LoginResponse(BaseModel):
     user_info: UserInfo
     agent_access: List[str]
     skills_blacklist: List[str]
+    permissions: Optional[Dict[str, Any]] = None

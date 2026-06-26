@@ -1,12 +1,12 @@
 """智能体注册表：加载配置，按智能体绑定的 skill 子集组装独立 Toolkit 并缓存。
 
 设计要点：
-- 系统启动时一次性加载所有可用 skill（复用 LocalWorkspace 机制）
+- 系统启动时通过 WorkspaceService 加载所有可用 skill
 - 每个智能体按其 skills 配置，从全量 skill 中筛选出子集，组装独立 Toolkit
 - 这样不同智能体只能看到自己绑定的工具，实现职责隔离
 """
+import inspect
 import logging
-import os
 from typing import Dict, List, Optional
 
 import yaml
@@ -15,7 +15,6 @@ from agentscope.model import OpenAIChatModel
 from agentscope.permission import PermissionContext, PermissionMode
 from agentscope.state import AgentState
 from agentscope.tool import Toolkit
-from agentscope.workspace import LocalWorkspace
 
 from app.agents.base import AgentDefinition
 
@@ -30,29 +29,6 @@ def load_agent_definitions(config_path: str) -> List[AgentDefinition]:
     return [AgentDefinition(**a) for a in raw_agents]
 
 
-async def load_all_skills(skill_config_path: str, workdir: str = "./my-workspace"):
-    """加载所有可用 skill，返回 (workspace, all_tools, all_skills_meta)。
-
-    复用 chat_service 中的 LocalWorkspace 加载机制，一次性把所有 skill 装入工作区，
-    后续按智能体配置筛选子集。
-    """
-    with open(skill_config_path, "r", encoding="utf-8") as f:
-        config = yaml.safe_load(f)
-
-    skill_loaders = [s["directory"] for s in config.get("skills", [])]
-
-    workspace = LocalWorkspace(
-        workdir=workdir,
-        default_mcps=[],
-        skill_paths=skill_loaders,
-    )
-    await workspace.initialize()
-
-    all_tools = await workspace.list_tools()
-    all_skills_meta = await workspace.list_skills()
-    return workspace, all_tools, all_skills_meta
-
-
 class AgentRegistry:
     """智能体注册表：管理智能体定义、模型实例、按需创建带 skill 子集的 Agent。
 
@@ -62,7 +38,7 @@ class AgentRegistry:
     def __init__(
         self,
         definitions: List[AgentDefinition],
-        workspace: LocalWorkspace,
+        workspace_service: "WorkspaceService",  # noqa: F821
         all_tools: list,
         all_skills_meta: list,
         create_model_fn,
@@ -70,14 +46,14 @@ class AgentRegistry:
         """
         Args:
             definitions: 全部智能体定义
-            workspace: 已初始化的 LocalWorkspace
+            workspace_service: 工作区服务实例，用于按会话创建工作区
             all_tools: 工作区内全部工具
             all_skills_meta: 工作区内全部 skill 元信息
             create_model_fn: 工厂函数，签名 create_model_fn() -> OpenAIChatModel，
                              每次调用返回新的模型实例（流式模型不可复用）
         """
         self._defs: Dict[str, AgentDefinition] = {d.id: d for d in definitions}
-        self._workspace = workspace
+        self._workspace_service = workspace_service
         self._all_tools = all_tools
         self._all_skills_meta = all_skills_meta
         self._create_model_fn = create_model_fn
@@ -123,17 +99,28 @@ class AgentRegistry:
             self._toolkits[agent_id] = self._build_toolkit_for(definition)
         return self._toolkits[agent_id]
 
-    def create_agent(
+    def register_external_agent(self, definition: AgentDefinition):
+        """注册外部智能体到注册表。"""
+        self._defs[definition.id] = definition
+
+    def unregister_external_agent(self, agent_id: str):
+        """从注册表注销外部智能体，同时清理缓存的 Toolkit。"""
+        self._defs.pop(agent_id, None)
+        self._toolkits.pop(agent_id, None)
+
+    async def create_agent(
         self,
         agent_id: str,
         session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         agent_state: Optional[AgentState] = None,
     ) -> Optional[Agent]:
         """创建一个 Agent 实例。
 
         Args:
             agent_id: 智能体 id
-            session_id: 会话 id（用于 AgentState）
+            session_id: 会话 id（用于 AgentState 和工作区键）
+            user_id: 用户 id（用于工作区键）
             agent_state: 已恢复的 AgentState（多轮上下文），优先使用；为 None 则新建
 
         Returns:
@@ -155,11 +142,33 @@ class AgentRegistry:
                 permission_context=PermissionContext(mode=PermissionMode.BYPASS),
             )
 
-        agent = Agent(
+        # 构建 Agent 基础参数
+        agent_kwargs = dict(
             name=definition.name,
             system_prompt=definition.system_prompt,
             model=model,
             toolkit=toolkit,
             state=agent_state,
         )
+
+        # 若提供了 user_id 和 session_id，获取对应工作区并尝试注入 Agent
+        if user_id and session_id:
+            try:
+                workspace = await self._workspace_service.get_workspace(
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    session_id=session_id,
+                )
+                # Agent 构造函数可能接受 workspace 参数
+                if "workspace" in inspect.signature(Agent.__init__).parameters:
+                    agent_kwargs["workspace"] = workspace
+            except Exception:
+                logger.warning(
+                    "[AgentRegistry] 创建工作区失败 (user=%s, agent=%s, session=%s)",
+                    user_id,
+                    agent_id,
+                    session_id,
+                )
+
+        agent = Agent(**agent_kwargs)
         return agent

@@ -1,9 +1,10 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from typing import Any, Dict
 
 from app.dao.user_dao import verify_login
 from app.models.auth import LoginRequest
 from app.services.auth_service import create_access_token
+from app.services.permission_service import save_login_permissions
 from app.config import JWT_EXPIRE_HOURS
 
 router = APIRouter()
@@ -18,8 +19,8 @@ def error_response(code: int, msg: str) -> Dict[str, Any]:
 
 
 @router.post("/login")
-async def login(request: LoginRequest):
-    result = await verify_login(request.username, request.password)
+async def login(body: LoginRequest, http_request: Request):
+    result = await verify_login(body.username, body.password)
     # 暂时使用模拟接口
     result = {
         "verification": True ,
@@ -44,6 +45,25 @@ async def login(request: LoginRequest):
     }
     token = create_access_token(token_payload)
 
+    # 构造 MNG 格式的 permissions 并保存到 Redis
+    permissions = {
+        "agent_whitelist": [
+            {"id": name, "name": name, "code": name} for name in agent_access
+        ],
+        "skill_blacklist": [
+            {"id": name, "name": name, "code": name} for name in skills_blacklist
+        ],
+    }
+    redis_client = http_request.app.state.redis_client
+    ttl = JWT_EXPIRE_HOURS * 3600
+    await save_login_permissions(
+        redis_client,
+        user_info["user_id"],
+        token,
+        permissions,
+        ttl,
+    )
+
     return success_response({
         "token": token,
         "token_type": "bearer",
@@ -51,4 +71,5 @@ async def login(request: LoginRequest):
         "user_info": user_info,
         "agent_access": agent_access,
         "skills_blacklist": skills_blacklist,
+        "permissions": permissions,
     })

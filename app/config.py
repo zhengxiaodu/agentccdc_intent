@@ -52,3 +52,11 @@ LANGFUSE_HOST = os.getenv("LANGFUSE_HOST", "https://us.cloud.langfuse.com")
 
 # 管理中心地址
 MNG_URL = os.getenv("MNG_URL", "")
+
+# Workspace 管理器配置
+WS_MANAGER_TYPE = os.getenv("WS_MANAGER_TYPE", "local")
+WS_BASEDIR = os.getenv("WS_BASEDIR", "./workspaces")
+WS_TTL = float(os.getenv("WS_TTL", "3600"))
+
+# 外部技能目录
+EXTERNAL_SKILLS_DIR = os.getenv("EXTERNAL_SKILLS_DIR", "./external_skills")

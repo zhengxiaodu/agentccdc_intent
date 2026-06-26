@@ -5,9 +5,10 @@ import asyncpg
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
-from app.config import MODEL_CONFIG_PATH, REDIS_URL, PG_DSN
+from app.config import MODEL_CONFIG_PATH, REDIS_URL, PG_DSN, WS_MANAGER_TYPE, WS_BASEDIR, WS_TTL, MNG_URL, EXTERNAL_SKILLS_DIR
 from app.services.chat_service import load_model_config
 from app.services.orchestrator_service import OrchestratorService
+from app.services.workspace_service import WorkspaceService
 from app.dao.pg_session_dao import SessionDAO
 from app.dao.init_pg import init_pg_tables
 from app.services.session_service import SessionService
@@ -21,8 +22,19 @@ async def lifespan(app: FastAPI):
     model_config = load_model_config(MODEL_CONFIG_PATH)
     app.state.model_config = model_config
 
+    # 初始化 WorkspaceService（管理智能体工作区生命周期）
+    workspace_service = WorkspaceService(
+        manager_type=WS_MANAGER_TYPE,
+        basedir=WS_BASEDIR,
+        ttl=WS_TTL,
+    )
+    app.state.workspace_service = workspace_service
+
     # 初始化多智能体编排服务（加载智能体定义 + skill + 意图识别器）
-    app.state.orchestrator_service = await OrchestratorService.create(model_config)
+    app.state.orchestrator_service = await OrchestratorService.create(
+        model_config,
+        workspace_service=workspace_service,
+    )
     print("Orchestrator service initialized (multi-agent + multi-intent)")
 
     # ---- Redis（保留，用于其他需求） ----
@@ -53,7 +65,15 @@ async def lifespan(app: FastAPI):
     else:
         print("Langfuse service disabled (credentials not configured)")
 
+    # 管理中心地址和外部技能目录（供运行时上下文使用）
+    app.state.mng_url = MNG_URL
+    app.state.external_skills_dir = EXTERNAL_SKILLS_DIR
+
     yield
+
+    # 关闭 WorkspaceService
+    await workspace_service.close()
+    print("WorkspaceService closed")
 
     # 关闭 PostgreSQL 连接池
     await pg_pool.close()
