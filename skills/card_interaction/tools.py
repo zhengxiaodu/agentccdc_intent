@@ -1,4 +1,3 @@
-from agentscope.tools import tool
 from tools.chart_tools import (
     render_generic_card,
     render_selectable_list,

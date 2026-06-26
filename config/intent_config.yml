@@ -5,11 +5,6 @@
 # ==================== 显式意图定义 ====================
 # 用户主动表达的需求类型，每个意图绑定一个负责处理的智能体
 intents:
-  - id: search_info
-    name: 信息检索
-    description: 用户需要实时信息、新闻、行情、网络知识、外部数据查询
-    agent: search_agent
-
   - id: render_chart
     name: 数据可视化
     description: 用户需要图表、表格、指标卡片、可视化展示

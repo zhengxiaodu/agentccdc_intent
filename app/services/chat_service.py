@@ -11,7 +11,7 @@ import json
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Any, AsyncGenerator, Dict, List
+from typing import Any, AsyncGenerator, Dict, List,Optional
 
 import yaml
 from agentscope.credential import OpenAICredential
